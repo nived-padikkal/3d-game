@@ -1,11 +1,16 @@
 {
-  "name": "multiplayer-3d-game",
+  "name": "multiplayer-3d-express-ws",
   "version": "1.0.0",
+  "description": "Minimal multiplayer server using express + express-ws",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
   },
+  "engines": {
+    "node": ">=16"
+  },
   "dependencies": {
-    "ws": "^8.17.0"
+    "express": "^5.1.0",
+    "express-ws": "^5.0.2"
   }
 }
