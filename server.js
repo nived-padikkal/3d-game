@@ -1,96 +1,112 @@
 // server.js
-// Minimal multiplayer server using express + express-ws
-// - Serves static files from ./public
-// - WS endpoint: /ws
-// Messages (JSON):
-// { type: "init" } -> server responds with { type: "init", id, players }
-// { type: "move", x, y, z } -> server updates and broadcasts { type: "update", id, x, y, z }
-
 const path = require("path");
 const express = require("express");
 const expressWs = require("express-ws");
 
 const app = express();
-expressWs(app); // attach express-ws to the express app
+expressWs(app);
 
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 10000;
 
-// Serve static client files from "public" directory (put your index.html + client JS there)
+/* --------------------------------------------------
+   ✅ FIX 1: Content Security Policy (CRITICAL)
+   Allows WebSocket + fetch from same origin
+-------------------------------------------------- */
+app.use((req, res, next) => {
+  res.setHeader(
+    "Content-Security-Policy",
+    [
+      "default-src 'self'",
+      "script-src 'self'",
+      "style-src 'self' 'unsafe-inline'",
+      "img-src 'self' data:",
+      "connect-src 'self' wss://threed-game-1ydu.onrender.com",
+    ].join("; ")
+  );
+  next();
+});
+
+/* --------------------------------------------------
+   Static files
+-------------------------------------------------- */
 app.use(express.static(path.join(__dirname, "public")));
 
-// In-memory players store: id -> { x, y, z }
+/* --------------------------------------------------
+   Multiplayer state
+-------------------------------------------------- */
 const players = new Map();
 
-// Helper: broadcast message to all connected sockets
+/* --------------------------------------------------
+   Broadcast helper
+-------------------------------------------------- */
 function broadcast(data) {
   const str = JSON.stringify(data);
-  // express-ws keeps track of ws clients on app.wsInstance? We'll iterate active clients from all ws routes
-  // Use express-ws's getWss() to get the underlying WebSocketServer
-  const wss = app.getWss ? app.getWss() : null;
-  if (!wss) return;
+  const wss = app.getWss();
   wss.clients.forEach((client) => {
-    if (client.readyState === client.OPEN) client.send(str);
+    if (client.readyState === client.OPEN) {
+      client.send(str);
+    }
   });
 }
 
-// WebSocket endpoint
-app.ws("/ws", (ws, req) => {
-  // create a simple unique id (timestamp + random)
+/* --------------------------------------------------
+   WebSocket endpoint
+-------------------------------------------------- */
+app.ws("/ws", (ws) => {
   const id = `${Date.now()}-${Math.floor(Math.random() * 10000)}`;
-
-  // initial spawn position
   const spawn = { x: 0, y: 0, z: 0 };
+
   players.set(id, spawn);
 
-  // send init: your id and current players
   const playersObj = {};
-  for (const [pid, pos] of players.entries()) playersObj[pid] = pos;
-  ws.send(JSON.stringify({ type: "init", id, players: playersObj }));
+  for (const [pid, pos] of players.entries()) {
+    playersObj[pid] = pos;
+  }
 
-  // broadcast that a new player joined
+  ws.send(JSON.stringify({ type: "init", id, players: playersObj }));
   broadcast({ type: "join", id, ...spawn });
 
-  console.log(`Player connected: ${id} (total: ${players.size})`);
+  console.log(`🟢 Player connected: ${id}`);
 
   ws.on("message", (raw) => {
     let msg;
     try {
       msg = JSON.parse(raw);
-    } catch (e) {
-      console.warn("Invalid JSON from client, ignoring.");
+    } catch {
       return;
     }
 
     if (msg.type === "move") {
-      // Validate numeric positions (basic)
       const x = Number(msg.x) || 0;
       const y = Number(msg.y) || 0;
       const z = Number(msg.z) || 0;
-      players.set(id, { x, y, z });
 
-      // Broadcast update to all clients
+      players.set(id, { x, y, z });
       broadcast({ type: "update", id, x, y, z });
-    } else {
-      // Unknown message types can be ignored or extended
     }
   });
 
   ws.on("close", () => {
     players.delete(id);
     broadcast({ type: "leave", id });
-    console.log(`Player disconnected: ${id} (total: ${players.size})`);
+    console.log(`🔴 Player disconnected: ${id}`);
   });
 
   ws.on("error", (err) => {
-    console.error("WebSocket error for", id, err && err.message);
+    console.error("WS error:", err?.message);
   });
 });
 
-// simple health endpoint
-app.get("/healthz", (req, res) => res.send({ ok: true }));
+/* --------------------------------------------------
+   Health check
+-------------------------------------------------- */
+app.get("/healthz", (_, res) => res.json({ ok: true }));
 
-// Start server
+/* --------------------------------------------------
+   Start server
+-------------------------------------------------- */
 app.listen(PORT, () => {
-  console.log(`Express WebSocket server listening on port ${PORT}`);
-  console.log(`WebSocket endpoint: ws://<host>:${PORT}/ws`);
+  console.log(`✅ Server listening on PORT ${PORT}`);
+  console.log(`🔗 WebSocket: wss://threed-game-1ydu.onrender.com/ws`);
 });
+
