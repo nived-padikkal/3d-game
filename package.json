@@ -10,7 +10,7 @@
     "node": ">=16"
   },
   "dependencies": {
-    "express": "^5.1.0",
-    "express-ws": "^5.0.2"
+    "axios": "^1.13.2",
+    "ws": "^8.18.3"
   }
 }
