@@ -1,79 +1,84 @@
-const path = require("path");
-const express = require("express");
-const expressWs = require("express-ws");
+import http from "http";
+import WebSocket, { WebSocketServer } from "ws";
+import axios from "axios";
 
-const app = express();
-expressWs(app);
+const ELEVEN_API_KEY = process.env.ELEVEN_API_KEY;
+const AGENT_ID = process.env.AGENT_ID;
+const PORT = 3001;
 
-const PORT = process.env.PORT || 10000;
+const server = http.createServer();
+const wss = new WebSocketServer({ server, path: "/ws/twilio" });
 
-/* CSP */
-app.use((req, res, next) => {
-  res.setHeader(
-    "Content-Security-Policy",
-    [
-      "default-src 'self'",
-      "script-src 'self'",
-      "style-src 'self' 'unsafe-inline'",
-      "img-src 'self' data:",
-      "connect-src 'self' wss:",
-    ].join("; ")
+let elevenWs = null;
+let streamSid = null;
+let twilioWs = null;
+
+// -------- ELEVENLABS SETUP --------
+async function connectElevenLabs() {
+  const { data } = await axios.get(
+    `https://api.elevenlabs.io/v1/convai/conversation/get_signed_url?agent_id=${AGENT_ID}`,
+    { headers: { "xi-api-key": ELEVEN_API_KEY } }
   );
-  next();
-});
 
-/* Static */
-app.use(express.static(path.join(__dirname, "public")));
+  elevenWs = new WebSocket(data.signed_url);
 
-/* State */
-const players = new Map();
+  elevenWs.on("message", (raw) => {
+    const msg = JSON.parse(raw.toString());
 
-/* Broadcast */
-function broadcast(data) {
-  const str = JSON.stringify(data);
-  const wss = app.getWss();
-  wss.clients.forEach((client) => {
-    if (client.readyState === 1) client.send(str);
+    if (msg.type === "audio" && streamSid) {
+      twilioWs.send(JSON.stringify({
+        event: "media",
+        streamSid,
+        media: { payload: msg.audio.chunk }
+      }));
+    }
+
+    if (msg.type === "interruption") {
+      twilioWs.send(JSON.stringify({ event: "clear", streamSid }));
+    }
+
+    if (msg.type === "ping") {
+      elevenWs.send(JSON.stringify({
+        type: "pong",
+        event_id: msg.ping_event.event_id
+      }));
+    }
   });
 }
 
-/* WebSocket */
-app.ws("/ws", (ws) => {
-  const id = `${Date.now()}-${Math.floor(Math.random() * 10000)}`;
-  const spawn = { x: 0, y: 0, z: 0 };
+// -------- TWILIO WS --------
+wss.on("connection", async (ws) => {
+  console.log("📞 Twilio connected");
+  twilioWs = ws;
 
-  players.set(id, spawn);
-
-  const snapshot = {};
-  for (const [pid, pos] of players.entries()) snapshot[pid] = pos;
-
-  ws.send(JSON.stringify({ type: "init", id, players: snapshot }));
-  broadcast({ type: "join", id, ...spawn });
+  await connectElevenLabs();
 
   ws.on("message", (raw) => {
-    try {
-      const msg = JSON.parse(raw);
-      if (msg.type === "move") {
-        const x = Number(msg.x) || 0;
-        const y = Number(msg.y) || 0;
-        const z = Number(msg.z) || 0;
-        players.set(id, { x, y, z });
-        broadcast({ type: "update", id, x, y, z });
-      }
-    } catch {}
+    const msg = JSON.parse(raw.toString());
+
+    if (msg.event === "start") {
+      streamSid = msg.start.streamSid;
+      console.log("▶ Stream started:", streamSid);
+    }
+
+    if (msg.event === "media") {
+      elevenWs.send(JSON.stringify({
+        user_audio_chunk: msg.media.payload
+      }));
+    }
+
+    if (msg.event === "stop") {
+      elevenWs.close();
+      streamSid = null;
+    }
   });
 
   ws.on("close", () => {
-    players.delete(id);
-    broadcast({ type: "leave", id });
+    elevenWs?.close();
+    streamSid = null;
   });
 });
 
-/* Health */
-app.get("/healthz", (_, res) => res.json({ ok: true }));
-
-/* Start */
-app.listen(PORT, () => {
-  console.log(`✅ Server running on ${PORT}`);
-  console.log(`🔗 WSS: wss://threed-game-1ydu.onrender.com/ws`);
-});
+server.listen(PORT, () =>
+  console.log(`🚀 Agent running on ${PORT}`)
+);
